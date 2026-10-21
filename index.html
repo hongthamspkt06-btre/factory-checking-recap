@@ -83,6 +83,12 @@
   .viewer{background:transparent;box-shadow:none;max-width:95vw;padding:0;}
   .viewer img{max-width:95vw;max-height:85vh;border-radius:8px;display:block;margin:0 auto 12px;background:#fff;}
 
+  @media (max-width:600px){
+    #app{padding:12px 10px 40px;}
+    .app-header{height:auto;min-height:56.7px;padding:10px 14px;font-size:15px;line-height:1.25;flex-wrap:wrap;}
+    .header-right{margin-left:auto;}
+  }
+
   @media print{
     body{background:#fff;} .app-header,.toolbar,.delcol,.photo-btns,.px,.badge{display:none !important;}
     .panel{border:none;box-shadow:none;padding:0;}
@@ -194,7 +200,7 @@ async function flushSave(){
   saving = false;
   if(ok){
     if(dirty){ flushSave(); }
-    else setStatus('ok', 'Saved ' + nowTime());
+    else setStatus('ok', 'Saved');
   }
 }
 
@@ -256,6 +262,17 @@ function autosize(el){ el.style.height='auto'; el.style.height = Math.max(72, el
 
 /* ---------- Export Excel (same layout as the "Pre-Visiting Finding" template) ---------- */
 async function fetchPhoto(fileId){
+  // 1) via Apps Script (no CORS issue)
+  try{
+    const out = await api({ action:'getPhoto', fileId });
+    if(out.base64){
+      const bin = atob(out.base64), bytes = new Uint8Array(bin.length);
+      for(let i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
+      const bmp = await createImageBitmap(new Blob([bytes], { type: out.mime }));
+      return { buffer: bytes.buffer, ext: out.mime.indexOf('png')>=0 ? 'png' : 'jpeg', w: bmp.width, h: bmp.height };
+    }
+  }catch(e){ /* fall back to direct URLs */ }
+  // 2) direct URLs
   const urls = [
     'https://lh3.googleusercontent.com/d/' + encodeURIComponent(fileId) + '=w800',
     photoSrc(fileId, 800)
