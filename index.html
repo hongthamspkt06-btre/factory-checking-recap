@@ -30,6 +30,8 @@
   .btn:disabled{opacity:.4;cursor:not-allowed;}
   .btn-steel{background:var(--steel);border-color:var(--steel);color:#fff;}
   .btn-steel:hover{filter:brightness(1.08);background:var(--steel);color:#fff;}
+  .btn-green{background:#15803d;border-color:#15803d;color:#fff;}
+  .btn-green:hover{filter:brightness(1.1);background:#15803d;color:#fff;}
   .btn-red{color:var(--red);}
   .btn-danger{background:var(--red);border-color:var(--red);color:#fff;}
   .btn-danger:hover{filter:brightness(1.08);background:var(--red);color:#fff;}
@@ -92,6 +94,7 @@
 <input type="file" id="fileUpload" accept="image/*" multiple style="display:none;">
 <input type="file" id="fileCamera" accept="image/*" capture="environment" style="display:none;">
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 <script>
 /* ====== CONFIG: paste your Apps Script Web App URL (ends with /exec) ====== */
 const GAS_API_URL = "https://script.google.com/macros/s/AKfycbz91tZWsJrt4_kXeK3cokKr5l3j15BhyOLR_Jh9tMZ32cvyR5ntyKHu4ab2YFaYwW8/exec";
@@ -142,7 +145,7 @@ async function api(payload){
 function setStatus(kind, text){
   state.status = { kind, text };
   const el = document.getElementById('syncPill');
-  if(el) el.innerHTML = `<span class="dot ${kind}"></span>${esc(text)}`;
+  if(el) el.innerHTML = text ? `<span class="dot ${kind}"></span>${esc(text)}` : '';
 }
 function nowTime(){ return new Date().toLocaleTimeString('en-GB', {hour:'2-digit', minute:'2-digit', second:'2-digit'}); }
 
@@ -159,7 +162,7 @@ async function loadData(){
     })) : [newRow()];
     state.loaded = true;
     dirty = false;
-    setStatus('ok', 'Loaded ' + nowTime());
+    setStatus('ok', '');
   }catch(e){
     state.loadError = 'Could not load data: ' + e.message;
   }
@@ -251,6 +254,150 @@ function addRow(newSection){
 
 function autosize(el){ el.style.height='auto'; el.style.height = Math.max(72, el.scrollHeight) + 'px'; }
 
+/* ---------- Export Excel (same layout as the "Pre-Visiting Finding" template) ---------- */
+async function fetchPhoto(fileId){
+  const urls = [
+    'https://lh3.googleusercontent.com/d/' + encodeURIComponent(fileId) + '=w800',
+    photoSrc(fileId, 800)
+  ];
+  for(const u of urls){
+    try{
+      const res = await fetch(u, { credentials:'omit' });
+      if(!res.ok) continue;
+      const blob = await res.blob();
+      if(!blob.type || blob.type.indexOf('image/')!==0) continue;
+      const bmp = await createImageBitmap(blob);
+      const ext = blob.type.indexOf('png')>=0 ? 'png' : 'jpeg';
+      return { buffer: await blob.arrayBuffer(), ext, w: bmp.width, h: bmp.height };
+    }catch(e){ /* try next */ }
+  }
+  return null;
+}
+
+async function exportExcel(){
+  const btn = document.getElementById('exportBtn');
+  if(typeof ExcelJS === 'undefined'){ state.error = 'Excel library failed to load. Check your connection and refresh.'; render(); return; }
+  if(btn){ btn.disabled = true; btn.innerHTML = 'Exporting...'; }
+  state.error = '';
+  try{
+    const rows = state.rows;
+    // download all photos first (in parallel)
+    const imgs = {};
+    const ids = [...new Set(rows.flatMap(r => r.photos))];
+    await Promise.all(ids.map(async id => { imgs[id] = await fetchPhoto(id); }));
+
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('finding', {
+      pageSetup:{ paperSize:9, orientation:'portrait', fitToPage:true, fitToWidth:1, fitToHeight:0,
+        margins:{ left:0.39, right:0.39, top:0.39, bottom:0.39, header:0.31, footer:0.31 } }
+    });
+    ws.columns = [{ width:6.14 }, { width:12.14 }, { width:45.57 }, { width:31.14 }];
+    const COL_D_PX = 31.14*7 + 5, BOX_H = 87, GAP = 3;
+    const FONT = { name:'Calibri', size:11 };
+    const thin = { style:'thin', color:{argb:'FF000000'} }, med = { style:'medium', color:{argb:'FF000000'} };
+
+    // Row 1: title
+    ws.mergeCells('A1:D1');
+    const t = ws.getCell('A1');
+    t.value = state.title;
+    t.font = { name:'Calibri', size:15, bold:true };
+    t.alignment = { horizontal:'center', vertical:'middle' };
+    ws.getRow(1).height = 31.5;
+
+    // Row 2: column headers
+    ['No.','Section','Finding','Photo'].forEach((h,i)=>{
+      const c = ws.getCell(2, i+1);
+      c.value = h;
+      c.font = { ...FONT, bold:true };
+      c.alignment = { horizontal:'center', vertical:'middle', wrapText:true };
+      c.fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FFFCE4D6' } };
+      c.border = { top:med, bottom:med, left:(i===0?med:thin), right:(i===3?med:thin) };
+    });
+    ws.getRow(2).height = 31.5;
+
+    // Data rows
+    const placements = [];
+    const groups = [];   // [startRow, endRow, section]
+    rows.forEach((r, i)=>{
+      const rn = i + 3;
+      const isStart = i===0 || rows[i-1].gid !== r.gid;
+      const isEnd = i===rows.length-1 || rows[i+1].gid !== r.gid;
+      if(isStart) groups.push([rn, rn, r.section]); else groups[groups.length-1][1] = rn;
+      const blue = (i % 2 === 1);
+      const fill = blue ? { type:'pattern', pattern:'solid', fgColor:{ argb:'FFDDEBF7' } } : undefined;
+
+      // row height: enough for wrapped text and stacked photos
+      const textLines = String(r.finding||'').split('\n').reduce((n,l)=> n + Math.max(1, Math.ceil(l.length/48)), 0);
+      const textPt = textLines*15 + 8;
+      const ok = r.photos.filter(p => imgs[p]);
+      const photoPt = ok.length ? (ok.length*(BOX_H+GAP)+GAP)*0.75 : 0;
+      const ht = Math.max(67.5, textPt, photoPt);
+      ws.getRow(rn).height = ht;
+
+      const vals = [ { formula:'ROW()-2', result:i+1 }, null, r.finding || '', '' ];
+      [1,2,3,4].forEach(ci=>{
+        const c = ws.getCell(rn, ci);
+        if(ci!==2) c.value = vals[ci-1];
+        c.font = FONT;
+        c.alignment = { horizontal: ci===3 ? 'left' : 'center', vertical:'middle', wrapText:true };
+        if(fill && ci!==2) c.fill = fill;
+        c.border = {
+          left: ci===1 ? med : thin, right: ci===4 ? med : thin,
+          top: isStart ? med : thin, bottom: isEnd ? med : thin
+        };
+      });
+
+      // photos (stacked vertically inside column D)
+      let k = 0;
+      r.photos.forEach(p=>{
+        const im = imgs[p];
+        if(!im){
+          const link = ws.getCell(rn, 4);
+          const url = 'https://drive.google.com/file/d/' + p + '/view';
+          link.value = { text:'Photo (open link)', hyperlink:url };
+          link.font = { ...FONT, color:{argb:'FF0563C1'}, underline:true };
+          return;
+        }
+        const sc = Math.min((COL_D_PX-8)/im.w, BOX_H/im.h);
+        const w = Math.round(im.w*sc), h = Math.round(im.h*sc);
+        const id = wb.addImage({ buffer: im.buffer, extension: im.ext });
+        const rowPx = ht/0.75;
+        const topPx = GAP + k*(BOX_H+GAP) + (BOX_H-h)/2 + (ok.length===1 ? (rowPx-BOX_H-2*GAP)/2 : 0);
+        placements.push({ id, col: 3 + (COL_D_PX-w)/2/COL_D_PX, row: (rn-1) + Math.max(0, topPx)/rowPx, w, h });
+        k++;
+      });
+    });
+
+    // merge Section cells per group
+    groups.forEach(([a,b,sec])=>{
+      if(b>a) ws.mergeCells(a,2,b,2);
+      const c = ws.getCell(a,2);
+      c.value = sec || '';
+      c.font = FONT;
+      c.alignment = { horizontal:'center', vertical:'middle', wrapText:true };
+      for(let rr=a; rr<=b; rr++){
+        ws.getCell(rr,2).border = { left:thin, right:thin, top: rr===a ? med : thin, bottom: rr===b ? med : thin };
+      }
+    });
+
+    placements.forEach(p => ws.addImage(p.id, { tl:{ col:p.col, row:p.row }, ext:{ width:p.w, height:p.h }, editAs:'oneCell' }));
+
+    const buf = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buf], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = (state.title || 'Factory Checking Recap').replace(/[\\/:*?"<>|]+/g,'_') + '.xlsx';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
+
+    const missing = ids.filter(id => !imgs[id]).length;
+    if(missing) state.error = missing + ' photo(s) could not be embedded; a link was added in the Photo cell instead.';
+  }catch(e){
+    state.error = 'Export failed: ' + e.message;
+  }
+  render();
+}
+
 /* ---------- Render ---------- */
 function render(){
   const app = document.getElementById('app');
@@ -259,8 +406,7 @@ function render(){
     <div class="app-header">
       <span>Factory Checking Recap</span>
       <div class="header-right">
-        <span class="sync-pill" id="syncPill"><span class="dot ${state.status.kind}"></span>${esc(state.status.text)}</span>
-        <button class="btn btn-sm" id="reloadBtn" ${state.loading?'disabled':''}>&#8635; Reload</button>
+        <span class="sync-pill" id="syncPill">${state.status.text ? `<span class="dot ${state.status.kind}"></span>${esc(state.status.text)}` : ''}</span>
       </div>
     </div>`;
 
@@ -316,6 +462,7 @@ function render(){
       <div class="toolbar">
         <button class="btn btn-steel" id="addRowBtn">+ Add row</button>
         <button class="btn" id="addSecBtn">+ Add new section</button>
+        <button class="btn btn-green" id="exportBtn" style="margin-left:auto;">&#11015; Export Excel</button>
       </div>
       ${state.error ? `<div class="inline-msg" id="errMsg">&#9888; ${esc(state.error)}</div>` : ''}
     </div>
@@ -334,10 +481,6 @@ function render(){
 
   const $ = id => document.getElementById(id);
 
-  $('reloadBtn').onclick = ()=>{
-    if((dirty || saving || pendingCount()) && !confirm('You have unsaved changes. Reload anyway?')) return;
-    loadData();
-  };
   $('titleInput').oninput = e => { state.title = e.target.value; scheduleSave(); };
 
   document.querySelectorAll('textarea').forEach(autosize);
@@ -363,6 +506,7 @@ function render(){
 
   $('addRowBtn').onclick = ()=>addRow(false);
   $('addSecBtn').onclick = ()=>addRow(true);
+  $('exportBtn').onclick = exportExcel;
 
   if($('delYes')) $('delYes').onclick = ()=>{
     const row = state.rows.find(r=>r.id===state.confirmDeleteId);
