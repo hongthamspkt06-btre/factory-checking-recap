@@ -56,14 +56,14 @@
   table.sheet td.sec{background:#fff !important;}
   table.sheet td.sec textarea, table.sheet td.fnd textarea{
     width:100%;border:none;background:transparent;font-size:14px;line-height:1.4;resize:none;outline:none;
-    padding:10px;display:block;overflow:hidden;min-height:72px;
+    padding:6px 10px;display:block;overflow:hidden;min-height:43px;
   }
   table.sheet td.sec textarea{text-align:center;}
   table.sheet textarea:focus{background:#f4f8ff;box-shadow:inset 0 0 0 2px var(--steel);}
   table.sheet td.pho{padding:4px;}
   .photo-grid{display:flex;flex-wrap:wrap;gap:4px;justify-content:center;align-items:center;}
   .pwrap{position:relative;}
-  .pwrap img{display:block;max-width:100%;max-height:130px;object-fit:cover;cursor:zoom-in;}
+  .pwrap img{display:block;max-width:100%;max-height:78px;object-fit:cover;cursor:zoom-in;}
   .pwrap.uploading img{opacity:.45;cursor:default;}
   .pwrap .badge{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#000;}
   .pwrap .px{position:absolute;top:0;right:0;background:rgba(220,38,38,.92);color:#fff;border:none;width:18px;height:18px;font-size:12px;line-height:18px;padding:0;cursor:pointer;display:none;}
@@ -204,6 +204,37 @@ async function flushSave(){
   }
 }
 
+/* ---------- Live sync: pick up changes made on other devices ---------- */
+const POLL_MS = 8000;
+let polling = false;
+function busy(){
+  const ae = document.activeElement;
+  const typing = ae && (ae.tagName==='TEXTAREA' || ae.tagName==='INPUT');
+  return dirty || saving || pendingCount() > 0 || typing || state.confirmDeleteId || state.viewerSrc;
+}
+async function pollData(){
+  if(NOT_CONFIGURED || !state.loaded || polling || document.hidden || busy()) return;
+  polling = true;
+  try{
+    const out = await api({ action:'getData' });
+    if(busy()) return;                       // user started editing while we were fetching
+    const d = out.data || {};
+    const title = d.title || state.title;
+    const rows = (Array.isArray(d.rows) && d.rows.length) ? d.rows.map(r => ({
+      id: r.id || uid(), gid: r.gid || uid(), section: r.section || '', finding: r.finding || '',
+      photos: Array.isArray(r.photos) ? r.photos : []
+    })) : state.rows;
+    if(JSON.stringify({ t:title, r:rows }) !== JSON.stringify({ t:state.title, r:state.rows })){
+      state.title = title; state.rows = rows;
+      render();
+    }
+  }catch(e){ /* ignore, try again next tick */ }
+  finally{ polling = false; }
+}
+setInterval(pollData, POLL_MS);
+document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) pollData(); });
+window.addEventListener('focus', pollData);
+
 /* ---------- Photos ---------- */
 function compressImage(file){
   return new Promise((resolve, reject)=>{
@@ -258,7 +289,7 @@ function addRow(newSection){
   if(tas.length) tas[tas.length-1].focus();
 }
 
-function autosize(el){ el.style.height='auto'; el.style.height = Math.max(72, el.scrollHeight) + 'px'; }
+function autosize(el){ el.style.height='auto'; el.style.height = Math.max(43, el.scrollHeight) + 'px'; }
 
 /* ---------- Export Excel (same layout as the "Pre-Visiting Finding" template) ---------- */
 async function fetchPhoto(fileId){
