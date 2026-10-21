@@ -407,6 +407,7 @@ function render(){
       <span>Factory Checking Recap</span>
       <div class="header-right">
         <span class="sync-pill" id="syncPill">${state.status.text ? `<span class="dot ${state.status.kind}"></span>${esc(state.status.text)}` : ''}</span>
+        ${(state.loaded && !state.loading && !NOT_CONFIGURED) ? '<button class="btn btn-sm btn-green" id="exportBtn">&#11015; Export Excel</button>' : ''}
       </div>
     </div>`;
 
@@ -462,7 +463,6 @@ function render(){
       <div class="toolbar">
         <button class="btn btn-steel" id="addRowBtn">+ Add row</button>
         <button class="btn" id="addSecBtn">+ Add new section</button>
-        <button class="btn btn-green" id="exportBtn" style="margin-left:auto;">&#11015; Export Excel</button>
       </div>
       ${state.error ? `<div class="inline-msg" id="errMsg">&#9888; ${esc(state.error)}</div>` : ''}
     </div>
